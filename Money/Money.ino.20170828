@@ -1,0 +1,545 @@
+#include <LEDMatrix.h>
+
+/*
+ *   특징:사용자를 감지하여 특정전자기기의 전원을 관리하여 전기사용량및 해당기기의 수명연장
+ *   기능: 
+ *        1.전원명령어 인식  : 전자기기의 전원을 버튼의 신호를 인식한후, 전자기기 관리시 사용한다.
+ *          동작방식 : 버튼 1을 누른 후, 5초 안에 리모컨의 전원스위치를 누른다. 파란불이 두번 깜박이면 재확인용 전원스위치를 더 누른다. 초록불이 3번 깜빡이면 OK. 빨간불이 3번 깜박이면 실패.
+ *                     인식된 리모컨 전원 시그날은 EEPROM에 저장된다.   
+ *        2.초기화 : 전자기기의 전원을 on 상태에서 버튼2를 누르면 기기의 상태를 ON 상태로  초기화한다.
+ *          동작방식 : 버튼 2를 누르면 기기의 상태를 ON상태로 초기화 한다.
+ *          
+ *        3.정상 처리 흐름.
+ *          int readInOFFButton=5  : INPUT  // 리모컨의 데이타를 읽어서 저장한다. 
+ *          InitButton       : INPUT  // 
+ *          
+ *          
+ *          
+ *          int stateLed = 0;  //0:초기값,1:초기화 완료,2:NotInitIRSig
+ *          int sigSize   =0;
+ *          int Signal[20]={};
+ *          
+ *          setup : EEPROM에서 전원시그날을 읽어 온다. 데이타가 업는 경우, 빨간불과 파란불을 교대로 점별시켜서 초기화상태를 전달한다. 초기화 완료는 파란불한다, 
+ *          
+ *          Loop :
+ *             if ( 초기화 버튼==ON )
+ *               init();  // 초기화처리
+ *             if ( readIRButton == ON )  
+ *               readIRSig();  // 전원 시그날을 읽어온다.
+ *               
+ *             if ( stateLed == 1)    // 전원 시그날 set & 초기화가 되었으면 초기화 완료.
+ *             {
+ *                Run();                
+ *             }
+ *               
+ *             displayState();              
+ *            
+ *          init() 
+ *            if ( sigSize > 0 )
+ *               stateLed = OK;
+ *          
+ *          readIRSig()
+ *            irrecv.enableIRIn();  // Start the receiver
+ *            decode_results  results1,results2;        // Somewhere to store the results
+ *            loop
+ *               displayLed(READY_READ_IR)
+ *
+ *               if (irrecv.decode(&results)) {  // Grab an IR code
+ *                    displayLed(READY_READ_IR)
+ *                    
+ *                    irrecv.resume();              // Prepare for the next value
+ *               } 
+ *               
+ *            while(5초동안)   
+ *            
+ *            loop            
+ *               displayLed(READY_READ_IR)
+ *
+ *               if (irrecv.decode(&results)) {  // Grab an IR code
+ *                    displayLed(READY_READ_IR)
+ *                    
+ *                    irrecv.resume();              // Prepare for the next value
+ *               } 
+ *            while(5초동안)   
+ *            
+ *               
+ *                     
+ */
+#include <IRremote.h>
+#include <EEPROM.h>
+
+#define _DEBUG_
+//#define _MEGA_
+
+#define _UNO_
+#define READY        1
+#define NOT_READY    0
+#define HEADER_SIZE  2
+#define BUTTON_IR_RCV    1    // IR_Button_On
+#define BUTTON_NOCHANGE  0    
+
+#define DETECT       1
+#define NOT_DETECT   0
+
+
+#define NOT_DETECT_TIME  4000  // 4초 * 10^3
+#define DETECT_RAT       0.8   // 80%
+
+#define ON  0
+#define OFF 1
+
+volatile int statusOfSystem = NOT_READY ; // 0: 초기, 1:초기화 완료
+volatile int buttonStatus   = BUTTON_NOCHANGE;
+int statusOfDetect = NOT_DETECT;
+
+int ledTimer      = 0;
+int notDectectCnt = 0; 
+int DectectCnt    = 0; 
+/*
+ *  button interrupt pin
+ */
+#ifdef _MEGA_
+uint8_t IRRcvInterruptPin   = 2;  // pin 21  : 리모컨 신호 수신
+uint8_t InitInterruptPin     = 20;  // Interrupt 3  : 초기화
+uint8_t IRSndPin     = 9;
+#endif
+#ifdef _UNO_
+uint8_t IRRcvInterruptPin   = 0;  // pin 2  : 리모컨 신호 수신
+uint8_t InitInterruptPin     = 20;  // Interrupt 3  : 초기화
+uint8_t IRSndPin     = 3;
+#endif
+
+/*
+ *  Led Pin
+ */
+uint8_t redPinOut     = 4;  // 1초에 두번씩 깜박이는 경우는 초기화 준비, 1초에 3번 깜빡이는 경우 초기화 확인.
+uint8_t greenPinOut   = 5;  // 사람을 감지 한 경우 1초에 한번씩 점멸.
+uint8_t bluePinOut    = 6;  // 감지하지 못 하는 경우 1초에 한번씩 점멸.
+uint8_t LedCLKpin     = 11;
+uint8_t LedCSpin      = 12;
+uint8_t LedDINpin     = 13;
+
+unsigned long redDelayTime   = -1;  
+unsigned long greenDelayTime = -1;
+unsigned long blueDelayTime  = -1;
+
+unsigned long redOldTime,greenOldTime,blueOldTime;
+
+uint8_t redLedStatus;
+uint8_t greenLedStatus;
+uint8_t blueLedStatus;
+
+volatile unsigned long IRRcvTime = 0; 
+int distAnalogPin  =   A0;  
+int DISTANCE       =  150;  // 100cm
+/*
+ * 적외선 관련 Pin
+ */
+int IRRcvPin     = 10;
+int  Sig[100]    = {};
+char  SigLen     = 0;    // 시그날 크기
+IRrecv irrecv(IRRcvPin);
+IRsend irsend;
+/*
+ *  초음파 관련 Pin
+ */
+int triggerPin=7;
+int echoPin   =8;
+unsigned long dectectStartTime=0;
+
+/*
+ * LEDMatrix
+ */
+ LEDMatrix Led;
+  
+void readIntDataFromEEPROM(int address,int *data,char len){  
+#ifdef _DEBUG_  
+    Serial.println("***Read IntData , address,len " + String(address) + " "+ String((int)len) );
+#endif       
+  for (int i=0;i<(int)len;i++)
+  {
+     *(data+i)=readIntFromEEPROM(address+i*sizeof(int));
+#ifdef _DEBUG_  
+    Serial.println("Read IntData , address,i,data " + String(address+i*sizeof(int)) + " "+String(i) + " "+ String(*(data+i) ));
+#endif       
+  }
+}
+void writeIntDataIntoEEPROM(int address,int *data,char len){  
+#ifdef _DEBUG_  
+    Serial.println("***writeIntDataIntoEEPROM , address,len " + String(address) + " "+ String((int)len) );
+#endif  
+  for (int i=0;i<(int)len;i++)
+  {
+     writeIntToEEPROM(address+i*sizeof(int),*(data+i));
+     #ifdef _DEBUG_  
+    Serial.println("writeIntDataIntoEEPROM , address,i,data " + String(address+i*sizeof(int)) + " "+String(i) + " "+ String(*(data+i) ));
+    #endif 
+  }
+}
+
+void writeHeaderIntoEEPROM(int address,char header,char len){  // 구성 : CHAR+SIZE(1Byte) 
+  EEPROM.write(address,header);
+  EEPROM.write(address+1,(byte)len);
+}
+
+char readHeaderFromEEPROM(int address,char *len){  // 구성 : CHAR+SIZE(1Byte) 
+
+  char header = EEPROM.read(address);
+  *len        = EEPROM.read(address+1); 
+#ifdef _DEBUG_  
+    Serial.println("Read Header is  "+ String(header) + ","+String(int(*len)));
+#endif    
+  return header;
+}
+
+void writeIntToEEPROM(int address,int value){
+  byte* pValue = (byte*)&value;
+  byte byteValue;
+
+  for(int i=0;i<sizeof(int);i++){
+    byteValue=*(pValue+i);
+    EEPROM.write(address+i,byteValue);
+  }
+}
+
+int readIntFromEEPROM(int address){
+  int value;
+  byte* pValue = (byte*)&value;
+  byte byteValue;
+
+  for(int i=0;i<sizeof(int);i++){
+    *(pValue+i)=EEPROM.read(address+i);
+  }
+  return value;
+}
+
+int readinitFromEEPROM(int * data,char *len)
+{
+  // 헤더읽기
+  char HEADER;
+  int  address  = 0;
+  
+  HEADER=readHeaderFromEEPROM(address,len);
+
+  address+=HEADER_SIZE;
+
+#ifdef _DEBUG_  
+  Serial.println("readinitFromEEPROM " + String(HEADER) + " "+String((int)*len) );
+#endif  
+  if (HEADER == 'R' )  // IR 명령어.
+  {
+    readIntDataFromEEPROM(address,data,*len);
+      
+#ifdef _DEBUG_  
+    Serial.print("Read data is ["+String((int)*len)+"] ");
+    for (int i=0;i<*len;i++){
+      Serial.print((int)*(data+i));
+      Serial.print(" ");
+    }
+    Serial.println("");    
+#endif
+    return READY;
+  }
+
+  return NOT_READY; 
+}
+
+void writeInitIntoEEPROM(int* data,char len)
+{
+  int  address  = 0;
+
+ 
+  writeHeaderIntoEEPROM(address,'R',len);
+  address+=HEADER_SIZE;
+  writeIntDataIntoEEPROM(address,data,len);
+}
+
+int readIRSig(boolean firstFlag)
+{  
+
+  decode_results  results;        // Somewhere to store the results
+  //Serial.println("readIRSig  호출 ");  
+  if (irrecv.decode(&results)) {  // Grab an IR code
+    Serial.println("readIRSig 성공 ");
+    for (int i = 1;  i < results.rawlen;  i++) 
+       Sig[i-1] = results.rawbuf[i] * USECPERTICK;      
+    SigLen = results.rawlen-1;  
+    irrecv.resume();
+    return READY;            
+  }
+//  Serial.print("readIRSig  호출:NOT_READY "); 
+//  delay(30);  
+//    Serial.println("readIRSig  읽기 실패 ");  
+  return NOT_READY;            
+   
+}
+void setup() {
+  // put your setup code here, to run once:
+  
+  Serial.begin(9600);
+  
+  IRrecv irrecv(IRRcvPin);
+  irrecv.enableIRIn();  // Start the receiver  
+
+  Led.Init_MAX7219(LedCLKpin,LedCSpin,LedDINpin);
+  // utrasonic  
+  pinMode(triggerPin,OUTPUT);
+  pinMode(echoPin,INPUT);
+
+  // led pinMode
+  pinMode(redPinOut,OUTPUT);
+  pinMode(greenPinOut,OUTPUT);
+  pinMode(bluePinOut,OUTPUT);
+
+  // button pinMode
+  pinMode(redPinOut,OUTPUT);
+  pinMode(greenPinOut,OUTPUT);
+  pinMode(bluePinOut,OUTPUT);
+
+  // Interrupt 
+  attachInterrupt(IRRcvInterruptPin,IRRcvButtonOn,RISING);
+
+
+  // Button Status
+  buttonStatus=BUTTON_NOCHANGE;
+  
+//  writeInitIntoEEPROM(Sig,SigLen);
+  // Read initInfo from EEPROM
+#ifdef _DEBUG_  
+  Serial.print("readinitFromEEPROM 호출 ");
+#endif  
+  statusOfSystem=readinitFromEEPROM(Sig,&SigLen);  
+  //statusOfSystem=NOT_READY;
+
+  dectectStartTime = millis();
+  redOldTime=millis();
+  greenOldTime=millis();
+  blueOldTime=millis();
+}
+
+
+
+void IRRcvButtonOn()
+{
+   if ( statusOfSystem == NOT_READY )
+   {
+      Serial.println("IRRcvButtonOn 이미 호출됨 "); 
+      return; 
+   }
+     
+   if (millis() - IRRcvTime < 2000)
+   {
+      Serial.println("IRRcvButtonOn 연속 호출 < 2초 "); 
+      return; 
+   }
+   IRRcvTime=millis();   
+   buttonStatus=BUTTON_IR_RCV; 
+   //irrecv.resume();
+   irrecv.enableIRIn();  // Start the receiver 
+    
+   Serial.println("IRRcvButtonOn 호출 "); 
+   //sendIR(ON); 
+}
+
+/*
+ *  상태 출력
+*/
+void BlinkLed()
+{
+ 
+   unsigned long currentTime=millis();
+   if ( redDelayTime > 1 &&redDelayTime != 9999  && redDelayTime < (currentTime - redOldTime) )
+   { 
+      redLedStatus = (redLedStatus == HIGH ? LOW : HIGH);
+      redOldTime=currentTime;
+   }
+   if ( greenDelayTime > 1 && greenDelayTime != 9999  && greenDelayTime < (currentTime - greenOldTime) )
+   {
+      greenLedStatus = (greenLedStatus == HIGH ? LOW : HIGH);
+      greenOldTime=currentTime;
+   }
+
+   if ( blueDelayTime > 1 && blueDelayTime != 9999  && blueDelayTime < (currentTime - blueOldTime) )
+   {
+      blueLedStatus = (blueLedStatus == HIGH ? LOW : HIGH);
+      blueOldTime=currentTime;
+   }
+      
+           
+   digitalWrite(redPinOut  ,redLedStatus);
+   digitalWrite(greenPinOut,greenLedStatus); 
+   digitalWrite(bluePinOut ,blueLedStatus); 
+
+}
+void SetLedTimer(char RGB,unsigned long DelayTime)  // 0 이면 off, 1 = on, 1 보다 크면 딜레이 타임. 9999 변화 없음. 
+{
+  switch(RGB)
+  {
+    case 'R':
+      redDelayTime   = DelayTime;
+      if ( redDelayTime == 9999 )
+         ;
+      else if ( redDelayTime == 0 ) 
+         redLedStatus = LOW;
+      else if (redDelayTime == 1 ) 
+         redLedStatus = HIGH;
+      break;
+    case 'G':
+      greenDelayTime = DelayTime;
+         
+      if ( greenDelayTime == 9999 )
+         ;
+      else if ( greenDelayTime == 0 ) 
+         greenLedStatus = LOW;
+      else if (greenDelayTime == 1 ) 
+         greenLedStatus = HIGH;
+    
+      break;
+      
+    case 'B':
+
+      blueDelayTime = DelayTime;
+
+      if ( blueDelayTime == 9999 )
+         ;
+      else if ( blueDelayTime == 0 ) 
+         blueLedStatus = LOW;
+      else if (blueDelayTime == 1 ) 
+         blueLedStatus = HIGH;
+  }
+}
+
+void DisplayLed()
+{
+  if ( statusOfSystem == NOT_READY )
+     SetLedTimer('R',500);
+  else if ( statusOfSystem == READY )
+     SetLedTimer('R',1);
+
+  if ( statusOfDetect == DETECT )
+     SetLedTimer('B',1);
+  else if ( statusOfDetect == NOT_DETECT )
+     SetLedTimer('B',500);
+
+  BlinkLed();  
+}
+
+void sendIR(int onOff)
+{
+  int khz = 38; // 38kHz carrier frequency for the NEC protocol
+   irsend.sendRaw(Sig, SigLen , khz); //Note the approach used to automatically calculate the size of the array.
+   SetLedTimer('G',(onOff==ON)?1:0);
+}
+
+void checkDistance()
+{
+  int distance;
+  unsigned long   currentTime =  millis();
+
+  // put your main code here, to run repeatedly:
+  digitalWrite(triggerPin,HIGH);
+  delayMicroseconds(10);
+  digitalWrite(triggerPin,LOW);
+  distance=pulseIn(echoPin,HIGH)/58;
+
+  float ratio = 0;
+  if ( distance <= DISTANCE )
+      ratio=(1-1.0*distance/DISTANCE)*8;
+  Led.DispProgressBar((int)ratio);
+  
+//  Serial.println("Distance is(cm) " + String(distance));
+  // 일정시간동안 물체를 찾을 수 없으면 끄기 신호를 보낸다.
+  if ( statusOfDetect == DETECT )
+  {
+       if ( distance > DISTANCE )  
+          notDectectCnt ++; 
+       else
+          DectectCnt ++; 
+
+       if ( (currentTime- dectectStartTime ) > NOT_DETECT_TIME )
+       {   
+        #ifdef _DEBUG_
+           Serial.println("DETECT : " +String(DectectCnt) +" " +  String(notDectectCnt) +" "+ String(1.0*notDectectCnt / (notDectectCnt+DectectCnt) ));
+        #endif   
+           if ( 1.0*notDectectCnt / (notDectectCnt+DectectCnt)  > DETECT_RAT )
+           {
+             statusOfDetect = NOT_DETECT;
+             sendIR(OFF);
+           }
+           Serial.println("Distance is(cm) " + String(distance)+" "+min((int)((1-1.0*distance/DISTANCE)*8),0));
+     //      Serial.println("DETECT : " +String(DectectCnt) +" " +  String(notDectectCnt) +" "+ String(1.0*notDectectCnt / (notDectectCnt+DectectCnt) ));
+          Serial.println("DETECT(DISTANCE) (" +String(DISTANCE)+")"+String(DectectCnt) +" " +  String(notDectectCnt) +" "+ String(1.0*notDectectCnt / (notDectectCnt+DectectCnt) ));
+
+
+           dectectStartTime = currentTime;
+           notDectectCnt=0;
+           DectectCnt   =0;
+       }
+
+    }
+    else
+    {
+       if ( distance <= DISTANCE )      
+          DectectCnt ++; 
+       else
+          notDectectCnt ++; 
+       if ( (currentTime- dectectStartTime ) > NOT_DETECT_TIME )
+       {   
+        #ifdef _DEBUG_
+           Serial.println("NOT_DETECT(DISTANCE) (" +String(DISTANCE)+")"+String(DectectCnt) +" " +  String(notDectectCnt) +" "+ String(1.0*DectectCnt / (notDectectCnt+DectectCnt) ));
+        #endif   
+
+           if ( 1.0*DectectCnt / (notDectectCnt+DectectCnt)  > DETECT_RAT )
+           {
+             statusOfDetect = DETECT;
+             sendIR(ON);
+           }
+           Serial.println("Distance is(cm) " + String(distance));
+           Serial.println("NOT_DETECT(DISTANCE) (" +String(DISTANCE)+")"+String(DectectCnt) +" " +  String(notDectectCnt) +" "+ String(1.0*DectectCnt / (notDectectCnt+DectectCnt) ));
+
+           dectectStartTime = currentTime;
+           notDectectCnt=0;
+           DectectCnt   =0;
+       }
+  
+    }
+
+#ifdef _DEBUG_
+  //Serial.println("Distance is(cm) " + String(distance));
+#endif
+   delay(10);
+}
+
+void loop() {
+  
+  // 초기화가 안되었으면 초기화 코드를 호출한다.
+  while ( statusOfSystem == NOT_READY )
+  {
+    statusOfSystem=readIRSig(true);
+    if ( statusOfSystem == READY )
+    {
+       writeInitIntoEEPROM(Sig,SigLen);
+       statusOfSystem=readinitFromEEPROM(Sig,&SigLen);  
+    }
+    DisplayLed();
+  }
+
+
+  DISTANCE =  map(analogRead(distAnalogPin),0,1023,2,400);
+  Led.DisplayOnLed(DISTANCE/100,(DISTANCE-DISTANCE/100*100)/10);
+ // Serial.println("DISTANCE = " + String(DISTANCE));
+  // 버튼입력 대기
+  if ( buttonStatus == BUTTON_IR_RCV )
+  {
+     statusOfSystem = NOT_READY;
+     buttonStatus   = BUTTON_NOCHANGE;
+  }
+
+  if ( statusOfSystem == READY )
+    checkDistance();
+  
+  // NOT DECTECT 상태에서  거리가 탐지거리 이하이면 DECTECT 상태로 변경.
+  DisplayLed();
+
+    
+}

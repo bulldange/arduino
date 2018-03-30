@@ -1,14 +1,17 @@
+#include <SD.h>
+
 //------------------------------------------------------------------------------
 // Include the IRremote library header
 // https://github.com/z3t0/Arduino-IRremote
 #include <IRremote.h>
+#include <IRCommand.h>
  
 //------------------------------------------------------------------------------
 // Tell IRremote which Arduino pin is connected to the IR Receiver (TSOP4838)
-//  New version2 
-int recvPin = 2;
+//
+int recvPin = 10;
 IRrecv irrecv(recvPin);
- 
+IRCommand ircomm; 
 //+=============================================================================
 // Configure the Arduino
 //
@@ -166,12 +169,18 @@ void  dumpCode (decode_results *results)
 void  loop ( )
 {
   decode_results  results;        // Somewhere to store the results
- 
-  if (irrecv.decode(&results)) {  // Grab an IR code
+  unsigned int delayTm;
+  char R=ircomm.getIR(irrecv,&delayTm);
+ if (R != 'N')
+    Serial.println("Command is " + String(R) + "," + String(delayTm));
+  
+   
+  /*if (irrecv.decode(&results)) {  // Grab an IR code
     dumpInfo(&results);           // Output the results
     dumpRaw(&results);            // Output the results in RAW format
     dumpCode(&results);           // Output the results as source code
     Serial.println("");           // Blank line between entries
     irrecv.resume();              // Prepare for the next value
-  }
+  }*/
+ 
 }
