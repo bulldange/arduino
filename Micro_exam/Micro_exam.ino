@@ -1,6 +1,6 @@
 int distance;
 int triggerPin=7;
-int echoPin=6;
+int echoPin=8;
 
 
 
@@ -21,8 +21,6 @@ void loop() {
   distance=pulseIn(echoPin,HIGH)/58;
 
   Serial.println("Distance is(cm) " + String(distance));
-
-  if ( accDistanceCnt >  
   
-  delay(100);
+  delay(1000);
 }
