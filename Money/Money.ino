@@ -1,5 +1,4 @@
-/* 새로운 버젼 5*/
-/* 새로운 버젼 testing2 version*/
+/* HotFix version*/
 #include <LEDMatrix.h>
 #include <IRremote.h>
 
