@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 /* 1 2 */
+=======
+>>>>>>> parent of 28179e6... 1
 #include <LEDMatrix.h>
 #include <IRremote.h>
 
