@@ -1,4 +1,4 @@
-/* 1 */
+/* 1 2 */
 #include <LEDMatrix.h>
 #include <IRremote.h>
 
